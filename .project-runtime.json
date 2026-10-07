@@ -1,0 +1,23 @@
+{
+  "language": "go",
+  "project_shape": "backend",
+  "source_extensions": [".go"],
+  "build_command": "go build ./...",
+  "testing": "deferred",
+  "service": {
+    "command": "go run ./cmd/server",
+    "address": "127.0.0.1:18093",
+    "env": {
+      "APIARY_ADDR": "HTTP 监听地址，默认 127.0.0.1:18093"
+    },
+    "health": {"path": "/healthz", "expect_status": 200}
+  },
+  "workflow_checks": [
+    {"workflow_id": "register-apiary", "command": "go run ./cmd/check -workflow register-apiary"},
+    {"workflow_id": "install-hive", "command": "go run ./cmd/check -workflow install-hive"},
+    {"workflow_id": "record-inspection", "command": "go run ./cmd/check -workflow record-inspection"},
+    {"workflow_id": "replace-queen", "command": "go run ./cmd/check -workflow replace-queen"},
+    {"workflow_id": "advance-hive-state", "command": "go run ./cmd/check -workflow advance-hive-state"},
+    {"workflow_id": "read-apiary-status", "command": "go run ./cmd/check -workflow read-apiary-status"}
+  ]
+}

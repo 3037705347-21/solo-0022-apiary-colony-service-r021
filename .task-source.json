@@ -1,0 +1,122 @@
+{
+  "task_source_schema_version": 1,
+  "entities": [
+    {
+      "id": "apiary",
+      "label": "蜂场",
+      "relations": ["hive.belongs_to.apiary"],
+      "invariants": ["编号唯一", "编号与名称、片区、值守人均不可为空"]
+    },
+    {
+      "id": "hive",
+      "label": "蜂箱",
+      "relations": ["hive.belongs_to.apiary", "inspection.belongs_to.hive", "queen.belongs_to.hive"],
+      "invariants": ["编号全局唯一", "retired 为终态", "同一蜂箱最多一只 laying 蜂王"]
+    },
+    {
+      "id": "inspection",
+      "label": "巡检",
+      "relations": ["inspection.belongs_to.hive"],
+      "invariants": ["群势 1..5", "螨计数 0..60", "关注项由固定阈值派生且不可手工覆盖"]
+    },
+    {
+      "id": "queen",
+      "label": "蜂王",
+      "relations": ["queen.belongs_to.hive"],
+      "invariants": ["标记色由引入年份个位唯一确定", "superseded/lost 记录不可再改"]
+    }
+  ],
+  "state_machines": [
+    {
+      "subject": "hive",
+      "states": ["colonized", "production", "wintering", "retired"],
+      "transitions": [
+        "colonized->production",
+        "production->wintering",
+        "wintering->production",
+        "colonized->retired",
+        "production->retired",
+        "wintering->retired"
+      ],
+      "invariants": ["retired 不可回退", "同状态迁移视为冲突", "retired 蜂箱不再接受巡检与换王"]
+    },
+    {
+      "subject": "queen",
+      "states": ["laying", "superseded", "lost"],
+      "transitions": ["laying->superseded", "laying->lost"],
+      "invariants": ["每个蜂箱至多一只 laying 蜂王", "已关闭的蜂王记录不可复用"]
+    }
+  ],
+  "capability_families": [
+    {"family": "状态机与流转", "occupied_by": ["hive_lifecycle"], "available": false},
+    {"family": "资源生命周期", "occupied_by": ["queen_lifecycle"], "available": false},
+    {"family": "错误传播与校验边界", "occupied_by": ["typed_error_mapping"], "available": false},
+    {"family": "并发与快照", "occupied_by": ["store_snapshot"], "available": false},
+    {"family": "版本化与审计", "occupied_by": [], "available": true},
+    {"family": "恢复与回滚", "occupied_by": [], "available": true},
+    {"family": "批量事务", "occupied_by": [], "available": true},
+    {"family": "导出与冻结", "occupied_by": [], "available": true}
+  ],
+  "extension_seams": [
+    {
+      "id": "queen-age-policy",
+      "anchor": "queen.markColor 与引入年份推导",
+      "entry": "更换蜂王时写入引入时间",
+      "distinct_outcome": "按引入时长给出替换提醒，而不是只看标记色",
+      "mechanism": "resource_lifecycle"
+    },
+    {
+      "id": "inspection-concern-thresholds",
+      "anchor": "inspection.analysis 的关注项阈值",
+      "entry": "提交巡检时派生关注项",
+      "distinct_outcome": "按片区或箱型覆盖默认阈值，派生出不同关注项集合",
+      "mechanism": "policy_override"
+    },
+    {
+      "id": "hive-state-guard",
+      "anchor": "domain.TransitionHiveState 的迁移表",
+      "entry": "推进蜂箱状态",
+      "distinct_outcome": "新增受控迁移（例如越冬期回到已立群）而不破坏拒绝非法迁移的行为",
+      "mechanism": "state_transition"
+    },
+    {
+      "id": "status-asof-window",
+      "anchor": "status 待巡检窗口",
+      "entry": "读取蜂场状态汇总",
+      "distinct_outcome": "对同一份快照换用不同 asOf 得到可复现的不同待巡检集合",
+      "mechanism": "deterministic_recompute"
+    }
+  ],
+  "tension_points": [
+    {
+      "workflow_id": "register-apiary",
+      "description": "编号唯一性与幂等录入的冲突：重复提交既可能被当作冲突拒绝，也可能被期望返回既有蜂场",
+      "observable_failure": "重复编号被静默覆盖原有蜂场，或返回结果与既有蜂场不一致"
+    },
+    {
+      "workflow_id": "install-hive",
+      "description": "先建蜂箱再校验蜂场与先校验蜂场再建蜂箱的冲突，以及编号范围为全局还是蜂场内的选择",
+      "observable_failure": "蜂场不存在却留下半成品蜂箱，或同一编号在两个蜂场同时存在"
+    },
+    {
+      "workflow_id": "record-inspection",
+      "description": "越界量测应被整体拒绝还是截断保存的冲突",
+      "observable_failure": "越界量测被截断后仍派生关注项，导致现场数据与关注项不一致"
+    },
+    {
+      "workflow_id": "replace-queen",
+      "description": "换王时先关闭旧蜂王还是先建立新蜂王的顺序冲突，以及失王原因下旧记录状态的取舍",
+      "observable_failure": "蜂箱出现两只 laying 蜂王，或旧记录被改写为与原因不符的状态"
+    },
+    {
+      "workflow_id": "advance-hive-state",
+      "description": "迁移到自身属于无副作用成功还是冲突的冲突",
+      "observable_failure": "同状态迁移被当作成功并刷新时间戳，掩盖了调用方的状态判断错误"
+    },
+    {
+      "workflow_id": "read-apiary-status",
+      "description": "状态汇总在多次读取之间的一致性与 asOf 可复现性的冲突",
+      "observable_failure": "计数与逐蜂箱摘要来自不同快照，或同一 asOf 两次读取得到不同待巡检集合"
+    }
+  ]
+}

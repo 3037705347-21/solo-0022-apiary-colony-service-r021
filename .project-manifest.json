@@ -1,0 +1,82 @@
+{
+  "schema_version": 1,
+  "name": "apiary-colony-service",
+  "project_shape": "backend",
+  "language": "go",
+  "modules": [
+    {"id": "httpapi", "path": "internal/httpapi", "responsibility": "HTTP 路由、请求解析与响应映射"},
+    {"id": "domain", "path": "internal/domain", "responsibility": "实体、枚举、校验与状态机迁移表"},
+    {"id": "store", "path": "internal/store", "responsibility": "并发安全内存存储与一致性快照"},
+    {"id": "apiary", "path": "internal/apiary", "responsibility": "蜂场与蜂箱录入、蜂箱状态迁移"},
+    {"id": "inspection", "path": "internal/inspection", "responsibility": "巡检接收与关注项判定"},
+    {"id": "queen", "path": "internal/queen", "responsibility": "蜂王更换与标记色推导"},
+    {"id": "status", "path": "internal/status", "responsibility": "蜂场状态汇总聚合"},
+    {"id": "app", "path": "internal/app", "responsibility": "应用组装与配置"},
+    {"id": "check", "path": "cmd/check", "responsibility": "按 workflow 执行真实 HTTP 路径的校验入口"}
+  ],
+  "complexity": {
+    "mechanisms": ["state_transition", "resource_lifecycle", "error_propagation", "concurrency"]
+  },
+  "workflows": [
+    {
+      "id": "register-apiary",
+      "name": "录入蜂场",
+      "entry": "POST /apiaries",
+      "steps": ["校验编号、名称、片区与值守人", "确认编号唯一后写入蜂场"],
+      "success": "返回 201 与已录入蜂场",
+      "failure": "重复编号返回冲突，字段非法返回校验错误",
+      "verification": "校验入口录入蜂场并通过 GET 读回同一份内容",
+      "module_ids": ["httpapi", "apiary", "domain", "store"]
+    },
+    {
+      "id": "install-hive",
+      "name": "安装蜂箱",
+      "entry": "POST /apiaries/{apiaryId}/hives",
+      "steps": ["确认蜂场存在", "校验箱型与编号唯一", "建立状态为已立群的蜂箱"],
+      "success": "返回 201 与状态为 colonized 的蜂箱",
+      "failure": "蜂场不存在返回未找到，编号重复或箱型非法返回可识别错误",
+      "verification": "校验入口安装蜂箱、读回蜂箱并断言重复编号被拒绝",
+      "module_ids": ["httpapi", "apiary", "domain", "store"]
+    },
+    {
+      "id": "record-inspection",
+      "name": "提交巡检",
+      "entry": "POST /hives/{hiveId}/inspections",
+      "steps": ["确认蜂箱存在且未退役", "校验量测范围", "派生关注项并保存巡检"],
+      "success": "返回 201 与巡检记录及派生关注项",
+      "failure": "未知蜂箱返回未找到，已退役返回状态错误，量测越界返回校验错误",
+      "verification": "校验入口提交越界量测确认被拒绝，再提交合法量测并检查关注项",
+      "module_ids": ["httpapi", "inspection", "domain", "store"]
+    },
+    {
+      "id": "replace-queen",
+      "name": "更换蜂王",
+      "entry": "POST /hives/{hiveId}/queens",
+      "steps": ["确认蜂箱存在且未退役", "关闭原产卵蜂王记录", "建立新蜂王并推导标记色"],
+      "success": "返回 201 与新蜂王记录（含标记色）",
+      "failure": "未知蜂箱返回未找到，已退役返回状态错误，来源非法返回校验错误",
+      "verification": "校验入口连续更换两次蜂王并断言旧记录被置为 superseded",
+      "module_ids": ["httpapi", "queen", "domain", "store"]
+    },
+    {
+      "id": "advance-hive-state",
+      "name": "推进蜂群状态",
+      "entry": "POST /hives/{hiveId}/state",
+      "steps": ["读取蜂箱当前状态", "按迁移表判断目标是否合法", "写入新状态并返回迁移结果"],
+      "success": "返回 200 与迁移前后状态",
+      "failure": "未知蜂箱返回未找到，非法迁移或迁移到自身返回状态错误",
+      "verification": "校验入口执行合法迁移与非法回退，断言两种结果",
+      "module_ids": ["httpapi", "apiary", "domain", "store"]
+    },
+    {
+      "id": "read-apiary-status",
+      "name": "读取蜂场状态汇总",
+      "entry": "GET /apiaries/{apiaryId}/status",
+      "steps": ["读取一致快照", "聚合状态计数、待巡检与关注项", "按蜂箱编号稳定排序返回"],
+      "success": "返回 200 与稳定排序的蜂场状态汇总",
+      "failure": "未知蜂场返回未找到，asOf 非法返回校验错误",
+      "verification": "校验入口构造多蜂箱场景并断言计数、待巡检与排序稳定",
+      "module_ids": ["httpapi", "status", "store"]
+    }
+  ]
+}
