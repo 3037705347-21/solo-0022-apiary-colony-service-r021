@@ -117,13 +117,11 @@ func (m *Memory) refreshHiveReadFactLocked(hiveID string) {
 	m.readFacts[hiveID] = fact
 }
 
-// HiveReadFact 返回蜂箱的派生读取事实；尚未装配时按当前权威记录装配一次。
+// HiveReadFact 返回蜂箱的派生读取事实。所有创建与变更路径都会在写事务内
+// 刷新投影；读取直接取投影，缺失时按当前权威记录现场装配。
 func (m *Memory) HiveReadFact(hiveID string) (HiveReadFact, bool) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if _, ok := m.hives[hiveID]; !ok {
-		return HiveReadFact{}, false
-	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	if fact, ok := m.readFacts[hiveID]; ok {
 		return cloneReadFact(fact), true
 	}
@@ -131,7 +129,6 @@ func (m *Memory) HiveReadFact(hiveID string) (HiveReadFact, bool) {
 	if !ok {
 		return HiveReadFact{}, false
 	}
-	m.readFacts[hiveID] = fact
 	return cloneReadFact(fact), true
 }
 
@@ -183,11 +180,6 @@ func (m *Memory) AdvanceHive(hiveID string, target domain.HiveState, _ time.Time
 	if !ok {
 		return domain.Transition{}, domain.NotFound("蜂箱", hiveID)
 	}
-	// 记录本次请求希望推进到的状态，让读取先看到目标状态。
-	if fact, present := m.readFacts[hiveID]; present {
-		fact.State = target
-		m.readFacts[hiveID] = fact
-	}
 	if hive.State == target {
 		return domain.Transition{}, domain.InvalidState("蜂箱 %q 已经处于状态 %q", hiveID, target)
 	}
@@ -198,6 +190,8 @@ func (m *Memory) AdvanceHive(hiveID string, target domain.HiveState, _ time.Time
 	from := hive.State
 	hive.State = target
 	m.hives[hiveID] = hive
+	// 只有迁移真正被接受后才重建读取事实，被拒绝或冲突的迁移不留下任何状态。
+	m.refreshHiveReadFactLocked(hiveID)
 	return domain.Transition{HiveID: hiveID, From: from, To: target}, nil
 }
 
@@ -218,9 +212,14 @@ func (m *Memory) AddInspection(hiveID string, inspection domain.Inspection) (dom
 	inspection.HiveID = hiveID
 	m.inspections[hiveID] = append(m.inspections[hiveID], inspection)
 
-	observedAt := inspection.ObservedAt
-	hive.LastInspectionAt = &observedAt
+	// 最近巡检时间始终按观察时间最新的那条巡检确定，迟到提交不会把它回拨。
+	if latest, ok := latestInspection(m.inspections[hiveID]); ok {
+		observedAt := latest.ObservedAt
+		hive.LastInspectionAt = &observedAt
+	}
 	m.hives[hiveID] = hive
+	// 巡检被接受后立即重建读取事实，使蜂箱详情与蜂场概览马上看到新时间与关注项。
+	m.refreshHiveReadFactLocked(hiveID)
 	return inspection, nil
 }
 
@@ -255,6 +254,8 @@ func (m *Memory) AddQueen(
 
 	hive.ActiveQueenID = queen.ID
 	m.hives[hiveID] = hive
+	// 换王被接受后立即重建读取事实，使当前蜂王、标记色与产卵蜂王计数马上可见。
+	m.refreshHiveReadFactLocked(hiveID)
 	return queen, nil
 }
 
