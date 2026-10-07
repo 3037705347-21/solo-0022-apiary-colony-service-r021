@@ -183,11 +183,6 @@ func (m *Memory) AdvanceHive(hiveID string, target domain.HiveState, _ time.Time
 	if !ok {
 		return domain.Transition{}, domain.NotFound("蜂箱", hiveID)
 	}
-	// 记录本次请求希望推进到的状态，让读取先看到目标状态。
-	if fact, present := m.readFacts[hiveID]; present {
-		fact.State = target
-		m.readFacts[hiveID] = fact
-	}
 	if hive.State == target {
 		return domain.Transition{}, domain.InvalidState("蜂箱 %q 已经处于状态 %q", hiveID, target)
 	}
@@ -198,6 +193,9 @@ func (m *Memory) AdvanceHive(hiveID string, target domain.HiveState, _ time.Time
 	from := hive.State
 	hive.State = target
 	m.hives[hiveID] = hive
+	// 迁移被接受之后再重建派生读取事实，保证随后的详情与概览读到新状态；
+	// 被拒绝的迁移在校验阶段返回，不会改动权威记录与读取事实。
+	m.refreshHiveReadFactLocked(hiveID)
 	return domain.Transition{HiveID: hiveID, From: from, To: target}, nil
 }
 
@@ -221,6 +219,8 @@ func (m *Memory) AddInspection(hiveID string, inspection domain.Inspection) (dom
 	observedAt := inspection.ObservedAt
 	hive.LastInspectionAt = &observedAt
 	m.hives[hiveID] = hive
+	// 权威记录提交后同步重建读取事实，让详情与概览立即看到新的巡检时间与关注项。
+	m.refreshHiveReadFactLocked(hiveID)
 	return inspection, nil
 }
 
@@ -255,6 +255,8 @@ func (m *Memory) AddQueen(
 
 	hive.ActiveQueenID = queen.ID
 	m.hives[hiveID] = hive
+	// 旧王关闭、新王落库后重建读取事实，让详情的当前蜂王与概览的产卵蜂王计数立即更新。
+	m.refreshHiveReadFactLocked(hiveID)
 	return queen, nil
 }
 
